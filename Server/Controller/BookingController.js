@@ -1,0 +1,215 @@
+import Booking from '../Model/BookingModel.js';
+import Car from '../Model/CarModel.js';
+
+// Imports needed for Payment
+import Stripe from 'stripe';
+import Purchase from '../Model/PurchaseModel.js';
+import mongoose from 'mongoose';
+const stripeInstance = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Create a new booking
+// Create a new booking (Initializes Payment)
+export const createBooking = async (req, res) => {
+    try {
+        const { userId, carId, startDate, endDate } = req.body;
+
+        if (!userId || !carId || !startDate || !endDate) {
+            return res.json({ success: false, message: 'Missing Details' });
+        }
+
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+
+        // Basic validation
+        if (start >= end) {
+            return res.json({ success: false, message: 'End date must be after start date' });
+        }
+
+        // Check if car exists
+        const car = await Car.findById(carId);
+        if (!car) {
+            return res.json({ success: false, message: 'Car not found' });
+        }
+
+        // Check availability overlap
+        const existingBooking = await Booking.findOne({
+            carId,
+            status: { $in: ['Confirmed', 'Pending'] }, // Check pending too if we want to block concurrent attempts, but here we don't have pending bookings in DB yet.
+            // Actually, if we don't save pending booking, double booking is possible.
+            // To prevent double booking, we usually reserve.
+            // But user insists "booking created ONLY if success".
+            // We will check Confirmed bookings.
+            $or: [
+                { startDate: { $lt: end }, endDate: { $gt: start } }
+            ]
+        });
+
+        if (existingBooking) {
+            return res.json({ success: false, message: 'Car is not available for these dates' });
+        }
+
+        // Calculate total price
+        const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+        const totalPrice = days * car.pricePerDay;
+
+        // Create Purchase Record to track this transaction attempt
+        const purchase = new Purchase({
+            userId,
+            carId,
+            amount: totalPrice,
+            status: 'pending',
+            bookingId: potentialBookingId, // Storing the ID we will use for the Booking
+            startDate, // Store dates to saferty recreate booking
+            endDate
+        });
+        // Schema says bookingId required? Let's check. If required, we generate a dummy ID or just a new ObjectId that we WILL use for booking.
+        const potentialBookingId = new mongoose.Types.ObjectId();
+        purchase.bookingId = potentialBookingId;
+
+        await purchase.save();
+
+        // Create Stripe Checkout Session
+        const session = await stripeInstance.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [
+                {
+                    price_data: {
+                        currency: 'usd',
+                        product_data: {
+                            name: `${car.brand} ${car.model} Rental`,
+                            images: [car.image],
+                            description: `Rental from ${start.toDateString()} to ${end.toDateString()}`
+                        },
+                        unit_amount: totalPrice * 100,
+                    },
+                    quantity: 1,
+                },
+            ],
+            mode: 'payment',
+            metadata: {
+                purchaseId: purchase._id.toString(),
+                userId,
+                carId,
+                startDate: startDate,
+                endDate: endDate,
+                bookingId: potentialBookingId.toString(), // Pass this ID to use when creating booking
+                ownerId: car.owner.toString()
+            },
+            success_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/payment-cancel`,
+        });
+
+        return res.json({ success: true, message: 'Payment initialized.', url: session.url });
+
+    } catch (error) {
+        return res.json({ success: false, message: error.message });
+    }
+}
+
+// Verify Stripe Payment
+export const verifyStripe = async (req, res) => {
+    try {
+        const { success, orderId } = req.body;
+
+        if (success === "true" || success === true) {
+
+            // Find the purchase record
+            const purchase = await Purchase.findById(orderId);
+            if (!purchase) {
+                return res.json({ success: false, message: 'Purchase record not found' });
+            }
+
+            // Create the Booking
+            const newBooking = new Booking({
+                _id: purchase.bookingId, // Use the ID we reserved
+                userId: purchase.userId,
+                carId: purchase.carId,
+                startDate: purchase.startDate,
+                endDate: purchase.endDate,
+                totalPrice: purchase.amount,
+                // We need ownerId. Purchase model doesn't have it, but we can fetch it from Car or store it in Purchase.
+                // Fetching from Car is safer if we didn't store it.
+                // Wait, BookingModel REQUIRES ownerId.
+                // Let's fetch the car to get ownerId.
+            });
+
+            // Re-fetch Car to get ownerId (or could have stored it in Purchase, let's fetch for robustness)
+            const car = await Car.findById(purchase.carId);
+            if (car) {
+                newBooking.ownerId = car.owner;
+            } else {
+                // Fallback or error?
+                // If car is gone, we have a problem.
+                return res.json({ success: false, message: 'Car not found during verification' });
+            }
+
+            newBooking.paymentStatus = 'Paid';
+            newBooking.status = 'Confirmed';
+
+            await newBooking.save();
+
+            // Update Purchase Status
+            purchase.status = 'Completed';
+            await purchase.save();
+
+            return res.json({ success: true, message: "Booking Confirmed!" });
+
+        } else {
+            // Payment Failed
+            // We could update purchase status to failed
+            const purchase = await Purchase.findById(orderId);
+            if (purchase) {
+                purchase.status = 'failed';
+                await purchase.save();
+            }
+            return res.json({ success: false, message: "Payment Failed" });
+        }
+
+    } catch (error) {
+        console.log(error);
+        return res.json({ success: false, message: error.message });
+    }
+}
+
+// Get user's bookings
+export const getUserBookings = async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        const bookings = await Booking.find({ userId })
+            .populate('carId')
+            .sort({ createdAt: -1 });
+
+        return res.json({ success: true, bookings });
+
+    } catch (error) {
+        return res.json({ success: false, message: error.message });
+    }
+}
+
+// Cancel booking
+export const cancelBooking = async (req, res) => {
+    try {
+        const { userId, bookingId } = req.body;
+
+        const booking = await Booking.findOne({ _id: bookingId, userId });
+
+        if (!booking) {
+            return res.json({ success: false, message: 'Booking not found' });
+        }
+
+        if (booking.status === 'Cancelled') {
+            return res.json({ success: false, message: 'Booking is already cancelled' });
+        }
+
+        // Optional: Check if cancellation is allowed (e.g., 24h before)
+
+        booking.status = 'Cancelled';
+        await booking.save();
+
+        return res.json({ success: true, message: 'Booking cancelled successfully' });
+
+    } catch (error) {
+        return res.json({ success: false, message: error.message });
+    }
+}
