@@ -3,7 +3,7 @@ import { getAllCars, getCarById } from '../Controller/CarController.js';
 
 const carRouter = express.Router();
 
-carRouter.get('/', getAllCars);
+carRouter.get('/getdata', getAllCars);
 carRouter.get('/:id', getCarById);
 
 export default carRouter;
