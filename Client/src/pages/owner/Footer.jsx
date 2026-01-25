@@ -2,7 +2,7 @@ import React from "react";
 
 const Footer = () => {
   return (
-    <footer className="w-full bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 py-6 text-sm text-gray-500 dark:text-gray-400 transition-colors duration-300">
+    <footer className="w-full bg-white dark:bg-black border-t border-gray-200 dark:border-gray-800 py-6 text-sm text-gray-500 dark:text-gray-400 transition-colors duration-300">
       <div className="container mx-auto flex flex-col md:flex-row items-center justify-between px-6">
         <div className="mb-2 md:mb-0">
           &copy; {new Date().getFullYear()} AY Car Rental. All rights reserved.

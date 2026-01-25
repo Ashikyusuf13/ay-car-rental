@@ -74,7 +74,7 @@ const SideNavbar = () => {
 
       {/* Sidebar */}
       <aside
-        className={`fixed md:sticky top-0 left-0 h-screen bg-gray-900 shadow-2xl z-40 transition-transform duration-300 ease-in-out ${open ? "translate-x-0" : "-translate-x-full"
+        className={`fixed md:sticky top-0 left-0 h-screen bg-gray-900 dark:bg-black border-r border-gray-800  shadow-2xl z-40 transition-transform duration-300 ease-in-out ${open ? "translate-x-0" : "-translate-x-full"
           } md:translate-x-0 flex flex-col w-72`}
       >
         <div className="p-6 flex items-center justify-between">
